@@ -43,7 +43,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define VERSION "1.2.1"
+#define VERSION "1.3.0"
 #define HOME "/opt/share/hostsgen-ui"
 #define ADDON HOME "/addon.js"
 #define SELF HOME "/hostsgen-ui"
@@ -662,7 +662,7 @@ static int cmd_vps_start(int argc, char **argv) {
 	const char *host = argv[0], *port = argv[1], *user = argv[2], *secret = argv[3], *profile = argv[4],
 	           *subnet = argv[5], *options = argc > 6 ? argv[6] : "";
 	if (!valid_host(host) || !valid_number(port, 1, 65535) || !valid_user(user) || !valid_subnet(subnet) ||
-	    !valid_options(options) || (strcmp(profile, "1") != 0 && strcmp(profile, "3") != 0)) {
+	    !valid_options(options) || !valid_number(profile, 1, 3)) { // AmneziaWG 1.0, 2.0 или 3.1
 		say(LOG_ERR, "vps: неверные параметры");
 		return 2;
 	}

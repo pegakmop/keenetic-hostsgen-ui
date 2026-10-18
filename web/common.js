@@ -115,6 +115,8 @@
 .hg-steps li.hg-done::before{content:"✓";color:var(--success,#3bb273)}
 .hg-steps li.hg-fail::before{content:"✕";color:var(--error,#de3d3d)}
 .hg-steps li.hg-now::before{content:"…";color:var(--primary-color,#0097dc)}
+.hg-steps li.hg-warn{color:var(--warning,#f5a623)}
+.hg-steps li.hg-warn::before{content:"!";font-weight:700;color:var(--warning,#f5a623)}
 .hg-overlay [hidden]{display:none!important}
 .hg-text--short{min-height:84px}
 .hg-expert{margin-top:14px}

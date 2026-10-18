@@ -6,19 +6,39 @@ const { spawnSync } = require('node:child_process');
 const vps = require('../web/vps.js');
 const common = require('../web/common.js');
 
-test('awgProfile: AmneziaWG 3.1 — с KeeneticOS 5.2 Alpha 11', () => {
-  assert.equal(vps.awgProfile({ release: '5.02.B.0.0-0', title: '5.2 Beta 0' }), 3);
-  assert.equal(vps.awgProfile({ release: '5.02.A.11.0-0' }), 3);
-  assert.equal(vps.awgProfile({ release: '5.02.A.10.0-0' }), 1);
-  assert.equal(vps.awgProfile({ release: '5.02.C.1.0-0' }), 3);
-  assert.equal(vps.awgProfile({ release: '5.03.A.0.0-0' }), 3);
-  assert.equal(vps.awgProfile({ release: '6.00.A.0.0-0' }), 3);
-  assert.equal(vps.awgProfile({ release: '5.01.C.3.0-0' }), 1);
-  assert.equal(vps.awgProfile({ release: '4.03.C.6.0-0' }), 1);
-  assert.equal(vps.awgProfile({ title: '5.2 Alpha 3' }), 1);
-  assert.equal(vps.awgProfile({ title: '5.2.1' }), 3);
+test('awgProfile: 1.0 до 5.1 Alpha 3, 2.0 до 5.2 Alpha 10, дальше 3.1', () => {
+  const p = (release, title) => vps.awgProfile({ release, title });
+  // 3.1 — с 5.2 Alpha 11
+  assert.equal(p('5.02.B.0.0-0', '5.2 Beta 0'), 3);
+  assert.equal(p('5.02.A.11.0-0'), 3);
+  assert.equal(p('5.02.C.1.0-0'), 3);
+  assert.equal(p('5.03.A.0.0-0'), 3);
+  assert.equal(p('6.00.A.0.0-0'), 3);
+  assert.equal(p(undefined, '5.2.1'), 3);
+  // 2.0 — с 5.1 Alpha 3 до 5.2 Alpha 10, в том числе вся стабильная 5.1
+  assert.equal(p('5.02.A.10.0-0'), 2);
+  assert.equal(p('5.02.A.0.0-0'), 2);
+  assert.equal(p('5.01.C.7.0-4'), 2);
+  assert.equal(p('5.01.C.3.0-0'), 2);
+  assert.equal(p('5.01.B.0.0-1'), 2);
+  assert.equal(p('5.01.A.3.0-0'), 2);
+  assert.equal(p(undefined, '5.2 Alpha 3'), 2);
+  assert.equal(p(undefined, '5.1.7'), 2);
+  assert.equal(p(undefined, '5.1 Alpha 3'), 2);
+  // 1.0 — всё, что старше
+  assert.equal(p('5.01.A.2.0-0'), 1);
+  assert.equal(p(undefined, '5.1 Alpha 2'), 1);
+  assert.equal(p('5.00.C.4.0-0'), 1);
+  assert.equal(p('4.03.C.6.0-0'), 1);
   assert.equal(vps.awgProfile({}), 1);
   assert.equal(vps.awgProfile(null), 1);
+});
+
+test('profileNote: окно предупреждает, к каким роутерам подойдёт новый сервер', () => {
+  assert.match(vps.profileNote(3, '5.2 Beta 0'), /только роутеры с KeeneticOS 5\.2 и новее.*версию 2\.0 или 1\.0/);
+  assert.match(vps.profileNote(2, '5.1.7'), /AmneziaWG 2\.0: ваша прошивка \(5\.1\.7\).*KeeneticOS 5\.1 и новее.*версию 1\.0/);
+  assert.match(vps.profileNote(1, '4.3.6'), /\(4\.3\.6\) понимает только AmneziaWG 1\.0/);
+  assert.match(vps.profileNote(1, ''), /версия неизвестна/);
 });
 
 test('pickSubnet: 10.64–10.127, не пересекаясь с сетями роутера', () => {
@@ -66,6 +86,13 @@ test('readStatus: шаги, журнал, ошибка и настройки п�
 
   const failed = vps.readStatus(['@@state failed 2 2', '@@step connect Подключаюсь', '@@error сервер не принял логин или пароль'], vps.newJob());
   assert.equal(failed.error, 'сервер не принял логин или пароль');
+
+  const warned = vps.readStatus(['@@step check Проверяю сервер', '@@warn Сервер уже работает на AmneziaWG 1.0', '@@step docker Устанавливаю Docker'], vps.newJob());
+  assert.deepEqual(warned.steps.map((s) => [s.text, Boolean(s.warn)]), [
+    ['Проверяю сервер', false],
+    ['Сервер уже работает на AmneziaWG 1.0', true],
+    ['Устанавливаю Docker', false],
+  ]);
 });
 
 test('HOST_RE: IP и домены без пробелов и подчёркиваний', () => {
@@ -122,12 +149,14 @@ test('expertOptions: ошибки — до того, как роутер пой�
   assert.match(errors('S1 = 5')[0], /от 12 до 1132/); // защита заголовков 3.1 — S от 12
   assert.deepEqual(errors('S1 = 5', 1), []);
   assert.match(errors('S4 = 40')[0], /от 12 до 32/);
-  assert.match(errors('S3 = 10', 1)[0], /только в AmneziaWG 3\.1/);
+  assert.match(errors('S3 = 10', 1)[0], /«S3» есть только в AmneziaWG 2\.0 и новее, а прошивка роутера понимает только AmneziaWG 1\.0/);
+  assert.match(errors('RekeyAfterTime = 100', 2)[0], /только в AmneziaWG 3\.1, а прошивка роутера понимает только AmneziaWG 2\.0/);
   assert.match(errors('I4 = <c><b 0xdeadbeef>')[0], /<c> прошивка Keenetic не принимает/);
   assert.match(errors('I1 = <r 2><x 5>')[0], /нужна цепочка тегов/);
   assert.match(errors('I1 = <r 1001>')[0], /не больше 1000/);
   assert.match(errors('I1 = <r 1000><r 300>')[0], /больше 1280 байт/);
-  assert.match(errors('H1 = 5-10', 1)[0], /только одно число/);
+  assert.match(errors('H1 = 5-10', 1)[0], /для AmneziaWG 1\.0 — только одно число/);
+  assert.match(errors('H1 = 5-10', 2)[0], /для AmneziaWG 2\.0 — только одно число/);
   assert.match(errors('H1 = 10-5')[0], /диапазон/);
   assert.match(errors('H1 = 2')[0], /H1 и H2 пересекаются/); // H2 у 3.1 по умолчанию — 2
   assert.match(errors('H3 = 100-200\nH4 = 150')[0], /H3 и H4 пересекаются/);
@@ -136,6 +165,23 @@ test('expertOptions: ошибки — до того, как роутер пой�
   assert.match(errors('RekeyAfterTime = 100-200')[0], /30–140/);
   assert.match(errors('RejectAfterTime = 120')[0], /150–600/);
   assert.match(errors('', 3, { port: '70000' })[0], /ListenPort = 70000/);
+});
+
+test('expertOptions: AmneziaWG 2.0 и выбор версии нового сервера', () => {
+  const opts = (custom, profile, extra = {}) => vps.expertOptions({ custom, ...extra }, profile);
+  // 2.0: S3, S4 и I1–I5 есть, S меньше 12 можно (нет защиты заголовков), теги — только <b>, <r>, <t>
+  assert.deepEqual(opts('S3 = 5\nS4 = 3\nI2 = <t><r 10>', 2).errors, []);
+  assert.match(opts('I1 = <rd 5>', 2).errors[0], /только теги <b 0x…>, <r N> и <t>/);
+  assert.match(opts('I1 = <rc 5>', 2).errors[0], /только теги/);
+  assert.deepEqual(opts('I1 = <rd 5>', 3).errors, []);
+  assert.equal(opts('', 2, { mask: 'noise' }).text, 'Mask = noise\n');
+  // версия нового сервера постарше: для роутеров со старыми прошивками
+  assert.equal(opts('', 3, { version: '2' }).text, 'Version = 2\n');
+  assert.equal(opts('', 3, { version: '3' }).text, '');
+  assert.equal(opts('', 3, { version: '1', mask: 'noise' }).text, 'Version = 1\n'); // в 1.0 пакета I1 нет
+  assert.match(opts('RejectAfterTime = 200', 3, { version: '2' }).errors[0], /для сервера выбрана AmneziaWG 2\.0/);
+  assert.match(opts('S1 = 5', 3, { version: '2' }).text, /^S1 = 5\nVersion = 2\n$/); // без защиты заголовков S от 0
+  assert.match(opts('', 2, { version: '3' }).errors[0], /понимает только AmneziaWG 2\.0, а для сервера выбрана AmneziaWG 3\.1/);
 });
 
 test('common: plural и errorsOf', () => {

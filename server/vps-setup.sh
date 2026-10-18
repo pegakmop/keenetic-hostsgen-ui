@@ -4,13 +4,15 @@
 #
 # Запускает помощник роутера (helper/hostsgen-ui.c, vps-start) по SSH: «sh -s» под root, текст скрипта
 # приходит на stdin, а перед ним — строки с переменными:
-#   PROFILE   3 — AmneziaWG 3.1 (KeeneticOS 5.2 и новее), 1 — AmneziaWG 1.0 (прошивки постарше)
+#   PROFILE   какую AmneziaWG понимает роутер: 3 — 3.1 (KeeneticOS 5.2 Alpha 11 и новее), 2 — 2.0 (с 5.1 Alpha 3),
+#             1 — 1.0 (прошивки постарше)
 #   SUBNET    первые три октета сети VPN для нового сервера, например 10.77.12 (сервер .1, роутеры .2 и дальше)
 #   ENDPOINT  адрес, по которому роутер подключился к серверу (IP или домен), — он же Endpoint в настройках
 #   OPTIONS   необязательно: настройки из раздела «Для опытных» — строки «Параметр = значение» в base64
 #
-# Строки для роутера начинаются с @@: «@@step КОД ТЕКСТ», «@@error ТЕКСТ», затем «@@conf-begin»,
-# настройки подключения в base64 и «@@conf-end», в конце «@@done». Остальной вывод — подробный журнал.
+# Строки для роутера начинаются с @@: «@@step КОД ТЕКСТ», «@@warn ТЕКСТ» (предупреждение, настройка идёт
+# дальше), «@@error ТЕКСТ», затем «@@conf-begin», настройки подключения в base64 и «@@conf-end», в конце
+# «@@done». Остальной вывод — подробный журнал.
 # Повторный запуск на том же сервере ничего не переустанавливает: добавляет ещё одно подключение.
 #
 # Параметры маскировки AmneziaWG бывают двух видов — так их разбирает amneziawg-go (device/receive.go, send.go):
@@ -30,6 +32,7 @@ kinopoisk.ru 2gis.ru hh.ru lenta.ru ria.ru rbc.ru habr.com google.com youtube.co
 microsoft.com github.com wikipedia.org cloudflare.com telegram.org whatsapp.com'
 
 step() { echo "@@step $*"; }
+warn() { echo "@@warn $*"; }
 fail() {
 	echo "@@error $*"
 	exit 1
@@ -69,7 +72,7 @@ wait_apt() {
 check_server() {
 	step check "Проверяю сервер"
 	[ "$(id -u)" = 0 ] || fail "нужен вход под root"
-	case "${PROFILE:-}" in 1 | 3) ;; *) fail "неизвестная версия AmneziaWG: ${PROFILE:-}" ;; esac
+	case "${PROFILE:-}" in 1 | 2 | 3) ;; *) fail "неизвестная версия AmneziaWG: ${PROFILE:-}" ;; esac
 	case "${SUBNET:-}" in "" | *[!0-9.]*) fail "неверная сеть VPN: ${SUBNET:-}" ;; esac
 	case "${ENDPOINT:-}" in "" | *[!A-Za-z0-9.-]*) fail "неверный адрес сервера: ${ENDPOINT:-}" ;; esac
 	# Только Ubuntu: на Debian и других системах VPN, по опыту, не настраивается даже приложением Amnezia
@@ -104,6 +107,7 @@ read_options() {
 		value=${line#* = }
 		case $key in
 			Mask) case $value in dns | noise | off) ;; *) value= ;; esac ;;
+			Version) case $value in 1 | 2 | 3) ;; *) value= ;; esac ;;
 			ListenPort | Jc | Jmin | Jmax | S1 | S2 | S3 | S4 | PersistentKeepalive | MTU)
 				is_number "$value" || value= ;;
 			H1 | H2 | H3 | H4 | ContentPaddingAddition | RekeyAfterTime | RekeyTimeout | RejectAfterTime | \
@@ -123,6 +127,59 @@ END
 opt() {
 	value=$(printf '%s' "$OPTS" | sed -n "s/^$1 = //p" | tail -n 1)
 	[ -n "$value" ] && echo "$value"
+}
+
+awg_name() {
+	case $1 in
+		1) echo "AmneziaWG 1.0" ;;
+		2) echo "AmneziaWG 2.0" ;;
+		*) echo "AmneziaWG 3.1" ;;
+	esac
+}
+# С какой прошивки KeeneticOS роутер понимает эту версию
+awg_firmware() { if [ "$1" = 3 ]; then echo "5.2"; else echo "5.1"; fi; }
+
+# Версия AmneziaWG настроенного сервера: 3.1 — с ключом защиты заголовков, 2.0 — с S3 и S4, иначе 1.0
+server_profile() {
+	if grep -q '^HeaderProtectionKey' "$CONF"; then
+		echo 3
+	elif grep -q '^S[34] *=' "$CONF"; then
+		echo 2
+	else
+		echo 1
+	fi
+}
+
+# Настройки «Для опытных» для этого роутера, которых нет в версии $1
+unsupported_options() {
+	case $1 in
+		1) pattern='^(I[1-5]|Mask|ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts) ' ;;
+		2) pattern='^(ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts) ' ;;
+		*) return 0 ;;
+	esac
+	printf '%s' "$OPTS" | grep -E "$pattern" | sed 's/ = .*//' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# Версия AmneziaWG этого подключения — до установки Docker, чтобы несовместимость была видна сразу.
+# Настроенный сервер диктует её сам: роутер, который её не понимает, подключить нельзя, а роутер новее
+# подключается на версии сервера — с предупреждением. Новый сервер — на версии роутера или на выбранной
+# в «Для опытных» постарше, чтобы к нему могли подключаться и роутеры со старыми прошивками.
+choose_profile() {
+	if [ -f "$CONF" ]; then
+		have=$(server_profile)
+		[ "$have" -le "$PROFILE" ] ||
+			fail "сервер уже работает на $(awg_name "$have"), а прошивка этого роутера понимает только $(awg_name "$PROFILE") — обновите KeeneticOS до $(awg_firmware "$have") или подключите роутер к другому серверу"
+		if [ "$have" -lt "$PROFILE" ]; then
+			warn "Сервер уже работает на $(awg_name "$have") — подключение будет на ней же, хотя роутер понимает $(awg_name "$PROFILE"): к серверу могут подключаться роутеры со старыми прошивками, но маскировка слабее"
+			skipped=$(unsupported_options "$have")
+			[ -z "$skipped" ] || warn "Из настроек «Для опытных» не применены ($(awg_name "$have") их не знает): $skipped"
+		fi
+		PROFILE=$have
+	elif version=$(opt Version); then
+		[ "$version" -le "$PROFILE" ] ||
+			fail "прошивка роутера понимает только $(awg_name "$PROFILE"), а для сервера выбрана $(awg_name "$version")"
+		PROFILE=$version
+	fi
 }
 
 # apt-get с выводом в файл на сервере: в журнал роутера — только хвост, если что-то пошло не так
@@ -178,6 +235,12 @@ pick_shared() {
 			s2=$(opt S2 || rnd 12 96)
 			s3=$(opt S3 || rnd 12 64)
 			s4=$(opt S4 || rnd 12 20)
+		elif [ "$PROFILE" = 2 ]; then
+			# без защиты заголовков S могут быть меньше 12; S4 — тоже до 20 байт, как у 3.1
+			s1=$(opt S1 || rnd 15 150)
+			s2=$(opt S2 || rnd 15 150)
+			s3=$(opt S3 || rnd 8 64)
+			s4=$(opt S4 || rnd 4 20)
 		else
 			s1=$(opt S1 || rnd 15 150)
 			s2=$(opt S2 || rnd 15 150)
@@ -191,7 +254,8 @@ pick_shared() {
 		# Тип пакета и так зашифрован защитой заголовков — заголовки обычные, 1–4, как у Amnezia
 		h1=$(opt H1 || echo 1) h2=$(opt H2 || echo 2) h3=$(opt H3 || echo 3) h4=$(opt H4 || echo 4)
 	else
-		# AmneziaWG 1.0: случайные несовпадающие заголовки вместо 1–4 у WireGuard
+		# 1.0 и 2.0 — без защиты заголовков: случайные несовпадающие числа вместо 1–4 у WireGuard (диапазоны
+		# в 2.0 есть, но на KeeneticOS 5.1 их не проверить)
 		used=" $(opt H1) $(opt H2) $(opt H3) $(opt H4) "
 		for n in 1 2 3 4; do
 			value=$(opt "H$n") || {
@@ -256,15 +320,18 @@ mask_packet() {
 	echo "<r 2><b 0x$(pick 0100 0120)000100000000000$ar$(dns_name "$name")${qcode}0001$rr>"
 }
 
-# Свои параметры роутера: случайные у каждого, если не заданы в «Для опытных»
+# Свои параметры роутера: случайные у каждого, если не заданы в «Для опытных». I1–I5 — с AmneziaWG 2.0,
+# добивка и таймеры — с 3.1
 client_params() {
 	junk_params
-	[ "$PROFILE" = 3 ] || return 0
+	[ "$PROFILE" != 1 ] || return 0
 	i1=$(opt I1) || i1=$(mask_packet "$(opt Mask || echo dns)")
 	[ -z "$i1" ] || echo "I1 = $i1"
-	for key in I2 I3 I4 I5 ContentPaddingAddition; do
+	for key in I2 I3 I4 I5; do
 		value=$(opt $key) && echo "$key = $value"
 	done
+	[ "$PROFILE" = 3 ] || return 0
+	value=$(opt ContentPaddingAddition) && echo "ContentPaddingAddition = $value"
 	# Таймеры — около значений Amnezia, но у каждого роутера свои. Роутер меняет ключи не реже чем через
 	# 120 с (RekeyAfterTime), а сервер отвергает их через 150–180 с — с запасом на повторы рукопожатия
 	a=$(rnd 95 110) b=$(rnd 3 5) c=$(rnd 150 165) d=$(rnd 5 9) e=$(rnd 14 18)
@@ -277,7 +344,7 @@ client_params() {
 }
 
 new_server() {
-	step config "Настраиваю AmneziaWG"
+	step config "Настраиваю $(awg_name "$PROFILE")"
 	pick_port
 	pick_shared
 	key=$(awg genkey) || fail "не удалось создать ключи AmneziaWG"
@@ -296,7 +363,7 @@ new_server() {
 		(OPTS= && junk_params)
 		echo "S1 = $s1"
 		echo "S2 = $s2"
-		if [ "$PROFILE" = 3 ]; then
+		if [ "$PROFILE" != 1 ]; then
 			echo "S3 = $s3"
 			echo "S4 = $s4"
 		fi
@@ -417,15 +484,12 @@ restore_and_fail() {
 main() {
 	check_server
 	read_options
+	choose_profile
 	install_docker
 	if [ -f "$CONF" ]; then
-		step config "Сервер уже настроен, добавляю ещё одно подключение"
-		if grep -q '^HeaderProtectionKey' "$CONF"; then have=3; else have=1; fi
-		[ "$have" = 3 ] && [ "$PROFILE" = 1 ] &&
-			fail "сервер уже работает на AmneziaWG 3.1, а прошивка этого роутера её не поддерживает — обновите KeeneticOS до 5.2"
-		PROFILE=$have
-		if echo "$OPTS" | grep -Eq '^(ListenPort|S[1-4]|H[1-4]) '; then
-			step shared "Порт, S1–S4 и H1–H4 остаются прежними: они общие для всех роутеров этого сервера"
+		step config "Сервер уже настроен ($(awg_name "$PROFILE")), добавляю ещё одно подключение"
+		if echo "$OPTS" | grep -Eq '^(ListenPort|S[1-4]|H[1-4]|Version) '; then
+			step shared "Порт, S1–S4, H1–H4 и версия AmneziaWG остаются прежними: они общие для всех роутеров этого сервера"
 		fi
 	else
 		new_server

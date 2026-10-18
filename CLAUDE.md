@@ -49,28 +49,38 @@ hostsgen-ui — пакет кнопок для веб-интерфейса Keene
 - `server/vps-setup.sh` — выполняется на VPS (только Ubuntu — так решил владелец: на Debian, по его опыту,
   VPN не настраивается даже приложением Amnezia; root): ждёт apt свежего сервера, ставит
   `docker.io`, запускает контейнер `keenetic-awg` на `amneziavpn/amneziawg-go` (конфигурация и `start.sh`
-  в `/opt/keenetic-vpn`, NAT внутри контейнера), печатает строки `@@step/@@error/@@done` и настройки
+  в `/opt/keenetic-vpn`, NAT внутри контейнера), печатает строки `@@step/@@warn/@@error/@@done` и настройки
   клиента в base64 между `@@conf-begin` и `@@conf-end`. Повторный запуск добавляет пира, а не переустанавливает.
+  Версия AmneziaWG (`PROFILE`: 1 — 1.0, 2 — 2.0, 3 — 3.1) — что понимает роутер; `choose_profile` ещё до
+  установки Docker сверяет её с уже настроенным сервером (`server_profile`: 3.1 — есть HeaderProtectionKey,
+  2.0 — есть S3/S4, иначе 1.0). Сервер новее роутера — `@@error` с советом обновить KeeneticOS; сервер
+  старше — подключение на версии сервера и `@@warn` (и второй — о неприменённых «Для опытных»). Новый
+  сервер — на версии роутера или на `Version` из «Для опытных», если она старше.
   Параметры AmneziaWG делятся так, как их разбирает amneziawg-go (`device/receive.go`, `send.go`):
   - общие — по ним приёмник опознаёт пакет: S1–S4, H1–H4, HeaderProtectionKey, RandomTrailers. Случайные при
     первой настройке сервера (`pick_shared`: 3.1 — S1/S2 12–96, S3 12–64, S4 12–20, H 1–4 под защитой заголовков;
-    1.0 — S1/S2 15–150, H случайные), длины 148+S1, 92+S2, 64+S3, 32+S4 различны (`sizes_differ`). `add_peer`
-    копирует роутеру с сервера только их — так работают и серверы версий 1.1.x (S 12, как у Amnezia);
+    2.0 — S1/S2 15–150, S3 8–64, S4 4–20, H случайные; 1.0 — S1/S2 15–150, H случайные; H в 1.0 и 2.0 — числа,
+    без диапазонов: диапазоны на 5.1 не проверить), длины 148+S1, 92+S2, 64+S3, 32+S4 различны (`sizes_differ`).
+    `add_peer` копирует роутеру с сервера только их — так работают и серверы версий 1.1.x (S 12, как у Amnezia);
   - свои у роутера — `client_params`, новые на каждого: Jc 4–7, Jmin 12–48, Jmax на 64–200 больше, I1 —
     DNS-запрос (`mask_packet`: `<r 2>` ID, A/AAAA/HTTPS о домене из `DNS_NAMES`, иногда EDNS и cookie),
     таймеры около значений Amnezia (RekeyAfterTime до 120 с: сервер отвергает ключи через 150–180),
-    PersistentKeepalive 20–30. ContentPaddingAddition и I2–I5 — только из «Для опытных».
+    PersistentKeepalive 20–30; I1–I5 — с 2.0, таймеры, ContentPaddingAddition и DisableCookies — только 3.1.
+    ContentPaddingAddition и I2–I5 — только из «Для опытных».
   Тесты (`tests/vps-setup.test.js`) подключают сценарий с `VPS_SETUP_TEST=1` (тогда `main` не запускается)
   и зовут функции в dash с заглушкой `awg`.
 - «Для опытных» в окне: `expertOptions` в `vps.js` проверяет параметры (границы — что принимает импорт
-  KeeneticOS, см. грабли) и собирает строки «Параметр = значение» (плюс `Mask = noise|off`), браузер шлёт
+  KeeneticOS, см. грабли; `since` — с какой версии параметр есть, проверка — по версии будущего сервера)
+  и собирает строки «Параметр = значение» (плюс `Mask = noise|off` и `Version = N`), браузер шлёт
   их base64 последним аргументом `vps-start`, помощник проверяет только алфавит base64 и длину
   (`OPTIONS_MAX`), `read_options` в сценарии ещё раз сверяет ключи с белым списком и формат значений, `opt КЛЮЧ`
   отдаёт значение. Порт, S и H применяются только к новому серверу.
 - Подключение создаёт `vps.js` тем же вызовом, что кнопка «Загрузить из файла»:
   `{"interface":{"wireguard":{"import":{"import": base64(.conf), "name": "", "filename": "…"}}}}`, в ответе
   `created` и `intersects`; затем `{"interface":{"name": …, "description": …}}`, `{…, "up": true}` и сохранение.
-  Связь — `show interface` → `wireguard.peer[].online`. Версию AWG выбирает `awgProfile` по `show version`.
+  Связь — `show interface` → `wireguard.peer[].online`. Версию AWG выбирает `awgProfile` по `show version`:
+  с 5.2 Alpha 11 — 3, с 5.1 Alpha 3 — 2, раньше — 1 (бета и релиз позже всех альф своей версии).
+  `profileNote` предупреждает в окне, к каким роутерам подойдёт новый сервер.
 - Архив — по одному на процессор (`hostsgen-ui-{mipsel,mips,aarch64}.tar.gz`): кроме сборок своего процессора,
   в нём ссылка `bin/sh` → `/opt/share/hostsgen-ui/bin/hostsgen-ui.<процессор>`. Всё из `/opt` KeeneticOS
   запускает только через `/opt/bin/sh` (см. грабли), а без Entware её больше некому дать. Вызванный как `sh`,
@@ -103,7 +113,8 @@ hostsgen-ui — пакет кнопок для веб-интерфейса Keene
   начинающиеся с домена из своей пачки (ndm дописывает в вывод `exec` «process terminated»). Пачка
   `HOSTS_PER_EXEC` (30) должна укладываться в `MAX_HOSTS` помощника (64).
 - Строки `@@…` — договор между `vps-setup.sh`, помощником (`vps_failure`, ищет `@@step check`, `@@done`,
-  `@@error`) и `readStatus` в `vps.js`; заголовок `vps-status` — «@@state СОСТОЯНИЕ СЛЕДУЮЩАЯ ВСЕГО».
+  `@@error`) и `readStatus` в `vps.js` (`@@warn` — шаг с `warn: true`, окно показывает его оранжевым «!»);
+  заголовок `vps-status` — «@@state СОСТОЯНИЕ СЛЕДУЮЩАЯ ВСЕГО».
   Аргументов у `exec` не больше восьми: `vps-start` с настройками «Для опытных» занимает все восемь.
 - Список параметров «Для опытных» — `EXPERT_PARAMS` в `vps.js` и `case` в `read_options` (`vps-setup.sh`):
   новый параметр добавлять в оба места (и решить, общий он или свой у роутера).
@@ -198,9 +209,12 @@ dbclient собирается из dropbear (версия и SHA-256 — в `bui
 - AmneziaWG 3.1 прошивка понимает с 5.2 Alpha 11 (параметры — в `/lib/libndmWireguard.so`); в конфигурации
   роутера это одна строка `wireguard asc` со всеми параметрами, диапазоны — парами чисел: Jc Jmin Jmax S1 S2
   H1–H4 S3 S4 "I1"…"I5" ключ, затем пары ContentPaddingAddition, RekeyAfterTime, RekeyTimeout, RejectAfterTime,
-  KeepaliveTimeout, MaxHandshakeAttempts и флаги RandomTrailers, DisableCookies. На старых прошивках `vps.js`
-  выбирает AmneziaWG 1.0, а уже настроенный на 3.1 сервер `vps-setup.sh` для такого роутера не трогает
-  (ошибка с советом обновиться).
+  KeepaliveTimeout, MaxHandshakeAttempts и флаги RandomTrailers, DisableCookies.
+- AmneziaWG 2.0 — с 5.1 Alpha 3 до 5.2 Alpha 10 (со слов тестера; по прошивке 5.1.7 для KN-1012:
+  `libndmWireguard.so` знает jc…h4, s3, s4, i1–i5 и не знает ключей 3.1, а `jp_parse_tags` в `wireguard.ko`
+  сравнивает символы b, c, d, r, t, 0, x — поэтому для 2.0 окно разрешает в I1–I5 только `<b 0x…>`, `<r N>`,
+  `<t>`). Импорт конфигурации 2.0 на 5.2 даёт строку `asc` без хвоста 3.1. На живом 5.1 подключение
+  не проверялось — нужен тестер с такой прошивкой.
 - Импорт KeeneticOS 5.2 (проверено на Beta 0) принимает в I1–I5 теги `<b 0x…>`, `<r N>`, `<rd N>`, `<rc N>`,
   `<t>`, а на `<c>` отвечает «invalid I4 value»; принимает диапазоны H1–H4, S1/S2 до 1132, S3 до 1216, S4 до 32,
   Jc 128, Jmax 1280 и конфигурацию в стиле 1.0 (без S3/S4 и ключа). Импорт сам сохраняет конфигурацию

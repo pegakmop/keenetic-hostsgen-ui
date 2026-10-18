@@ -178,3 +178,79 @@ test('add_peer: с сервера — только общие параметры
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('pick_shared и client_params (2.0): S3/S4 без защиты заголовков, случайные H, I1 без таймеров', () => {
+  const r = run('i=0; while [ $i -lt 60 ]; do pick_shared; echo "$s1 $s2 $s3 $s4 $h1 $h2 $h3 $h4"; i=$((i + 1)); done', { PROFILE: '2' });
+  assert.equal(r.status, 0, r.err);
+  for (const line of r.out.trim().split('\n')) {
+    const [s1, s2, s3, s4, ...h] = line.split(' ').map(Number);
+    assert.ok(s1 >= 15 && s1 <= 150 && s2 >= 15 && s2 <= 150 && s3 >= 8 && s3 <= 64 && s4 >= 4 && s4 <= 20, line);
+    assert.equal(new Set([148 + s1, 92 + s2, 64 + s3, 32 + s4]).size, 4, line);
+    assert.equal(new Set(h).size, 4, line);
+    assert.ok(h.every((v) => v >= 5), line);
+  }
+  const p = params(run('client_params 2>/dev/null', { PROFILE: '2' }).out);
+  assert.deepEqual(Object.keys(p), ['Jc', 'Jmin', 'Jmax', 'I1']);
+  decodeDnsMask(p.I1);
+});
+
+/** Сервер с версией AmneziaWG have (0 — сервера ещё нет) и роутер с версией router: что скажет choose_profile. */
+function choose(have, router, options = '') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vps-choose-'));
+  const conf = path.join(dir, 'awg0.conf');
+  const shared = { 1: 'S1 = 40\nS2 = 50\nH1 = 11\nH2 = 22\nH3 = 33\nH4 = 44\n', 2: 'S1 = 40\nS2 = 50\nS3 = 20\nS4 = 10\nH1 = 11\nH2 = 22\nH3 = 33\nH4 = 44\n', 3: 'S1 = 12\nS2 = 12\nS3 = 12\nS4 = 12\nH1 = 1\nH2 = 2\nH3 = 3\nH4 = 4\nHeaderProtectionKey = K=\n' };
+  if (have) fs.writeFileSync(conf, `[Interface]\nPrivateKey = P=\nAddress = 10.1.2.1/24\nListenPort = 1234\n${shared[have]}`);
+  try {
+    const opts = options ? Buffer.from(options).toString('base64') : '';
+    const r = run('CONF=$TEST_CONF; read_options; choose_profile; echo "PROFILE=$PROFILE"', { PROFILE: String(router), TEST_CONF: conf, OPTIONS: opts });
+    return { status: r.status, profile: (r.out.match(/PROFILE=(\d)/) || [])[1], warn: r.out.match(/^@@warn .*/gm) || [], error: (r.out.match(/^@@error (.*)/m) || [])[1] };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('choose_profile: совместимость версий роутера и сервера', () => {
+  // сервер своей версии или старше — подключаемся на версии сервера
+  for (const [have, router] of [[1, 1], [2, 2], [3, 3]]) {
+    assert.deepEqual(choose(have, router), { status: 0, profile: String(have), warn: [], error: undefined }, `${have}/${router}`);
+  }
+  for (const [have, router] of [[1, 2], [1, 3], [2, 3]]) {
+    const r = choose(have, router);
+    assert.equal(r.profile, String(have), `${have}/${router}`);
+    assert.equal(r.warn.length, 1);
+    assert.match(r.warn[0], /подключение будет на ней же.*маскировка слабее/);
+  }
+  // сервер новее роутера — нельзя, с понятной причиной и советом
+  assert.match(choose(3, 2).error, /сервер уже работает на AmneziaWG 3\.1, а прошивка этого роутера понимает только AmneziaWG 2\.0 — обновите KeeneticOS до 5\.2/);
+  assert.match(choose(3, 1).error, /понимает только AmneziaWG 1\.0 — обновите KeeneticOS до 5\.2/);
+  assert.match(choose(2, 1).error, /сервер уже работает на AmneziaWG 2\.0.*обновите KeeneticOS до 5\.1/);
+  assert.notEqual(choose(2, 1).status, 0);
+  // настройки «Для опытных», которых нет в версии сервера, — с предупреждением
+  const skipped = choose(1, 3, 'Mask = noise\nI2 = <t>\nRekeyTimeout = 5\nJc = 9\n');
+  assert.match(skipped.warn[1], /не применены \(AmneziaWG 1\.0 их не знает\): Mask I2 RekeyTimeout$/);
+  assert.match(choose(2, 3, 'RekeyTimeout = 5\nI2 = <t>\n').warn[1], /: RekeyTimeout$/);
+  // новый сервер — на версии роутера или выбранной постарше, но не новее
+  assert.equal(choose(0, 3).profile, '3');
+  assert.equal(choose(0, 3, 'Version = 2\n').profile, '2');
+  assert.equal(choose(0, 2, 'Version = 1\n').profile, '1');
+  assert.match(choose(0, 2, 'Version = 3\n').error, /понимает только AmneziaWG 2\.0, а для сервера выбрана AmneziaWG 3\.1/);
+});
+
+test('add_peer: сервер на 2.0 — роутеру S1–S4 и H с сервера, свои Jc/Jmin/Jmax и I1', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vps-setup-'));
+  const conf = path.join(dir, 'awg0.conf');
+  fs.writeFileSync(conf, '[Interface]\nPrivateKey = SERVER=\nAddress = 10.9.8.1/24\nListenPort = 5555\nJc = 5\nJmin = 20\nJmax = 100\nS1 = 40\nS2 = 50\nS3 = 20\nS4 = 10\nH1 = 11\nH2 = 22\nH3 = 33\nH4 = 44\n');
+  try {
+    const r = run('CONF=$TEST_CONF; PROFILE=$(server_profile); echo "PROFILE=$PROFILE"; add_peer 2>/dev/null; printf "%s\\n" "$CLIENT_CONF"', { PROFILE: '3', ENDPOINT: '203.0.113.10', TEST_CONF: conf });
+    assert.equal(r.status, 0, r.out + r.err);
+    assert.match(r.out, /^PROFILE=2$/m);
+    const p = params(r.out.split('[Peer]')[0]);
+    for (const [key, value] of Object.entries({ S1: '40', S2: '50', S3: '20', S4: '10', H1: '11', H2: '22', H3: '33', H4: '44' })) assert.equal(p[key], value, key);
+    assert.equal(p.HeaderProtectionKey, undefined);
+    assert.equal(p.RekeyAfterTime, undefined);
+    assert.equal(p.DisableCookies, undefined);
+    decodeDnsMask(p.I1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
