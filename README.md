@@ -105,6 +105,47 @@ Entware — там написано, какой архив брать: mipsel, m
 
 Кнопок нет — смотрите раздел [«Если что-то не получилось»](#если-что-то-не-получилось).
 
+### Если на роутере уже есть Entware — одной командой
+
+Тогда модуль можно поставить и обновлять по SSH, без папки `install` и переподключения накопителя.
+
+1. Для скачивания с GitHub нужен `curl`: встроенный в Entware `wget` не умеет HTTPS. Если его ещё нет:
+   ```sh
+   opkg update && opkg install curl
+   ```
+2. Войдите в Entware по SSH (обычно `ssh root@192.168.1.1 -p 222`) и вставьте целиком:
+
+```sh
+(
+  url=https://github.com/PavelDemyanov/keenetic-hostsgen-ui/releases/latest/download
+  # процессор — по заголовку ELF /bin/sh прошивки: по модели его не узнать
+  read -r elf </bin/sh
+  case "$elf" in
+    "$(printf '\177ELF\002\001')"*) arch=aarch64 ;;
+    "$(printf '\177ELF\001\001')"*) arch=mipsel ;;
+    "$(printf '\177ELF\001\002')"*) arch=mips ;;
+    *) echo "Не узнал процессор роутера"; exit 1 ;;
+  esac
+  if command -v curl >/dev/null; then get="curl -fsSL -o"; else get="wget -qO"; fi
+  tmp=$(mktemp -d /opt/tmp/hostsgen-ui.XXXXXX) || exit 1
+  echo "Скачиваю hostsgen-ui-$arch.tar.gz"
+  if $get "$tmp/hg.tar.gz" "$url/hostsgen-ui-$arch.tar.gz"; then
+    tar -xzf "$tmp/hg.tar.gz" -C "$tmp" &&
+      mkdir -p /opt/share/hostsgen-ui &&
+      cp -r "$tmp/share/hostsgen-ui/." /opt/share/hostsgen-ui/ &&
+      cp "$tmp/etc/init.d/S99hostsgen-ui" /opt/etc/init.d/ &&
+      /opt/etc/init.d/S99hostsgen-ui restart
+  else
+    echo "Не скачался архив. Для HTTPS нужен curl: opkg update && opkg install curl"
+  fi
+  rm -rf "$tmp"
+)
+```
+
+Скрипт сам определит процессор роутера, скачает архив последней версии и перезапустит модуль — в конце
+появятся строки «index.html: модуль встроен». Модуль запускается вместе с Entware, в том числе после
+перезагрузки. Обновиться — выполнить ту же команду ещё раз.
+
 ## VPN на своём сервере
 
 ### Где взять сервер
@@ -252,12 +293,17 @@ HAR-файл), ниже — маска, подключение, через ко�
 накопитель: «OPKG» → «Накопитель»: «Не выбран» → «Сохранить» → снова накопитель → «Сохранить». Если
 обновляетесь с версии 1.0 и хотите VPN, поставьте ещё компонент «WireGuard VPN» (шаг 1).
 
+Если ставили командой через Entware — выполните её ещё раз.
+
 ## Отключение и удаление
 
 - **Отключить:** «OPKG» → «Накопитель»: «Не выбран» → «Сохранить». Интерфейс сразу станет обычным;
   включить обратно — выбрать накопитель снова.
 - **Удалить совсем:** отключите, затем в «Файлы и папки» удалите на накопителе папку `share/hostsgen-ui`,
   файлы `etc/init.d/S99hostsgen-ui` и `etc/initrc`, а если Entware нет — ещё и `bin/sh`.
+- **Если ставили командой через Entware:** отключить — `/opt/etc/init.d/S99hostsgen-ui stop` (до следующего
+  запуска Entware), удалить совсем —
+  `/opt/etc/init.d/S99hostsgen-ui stop && rm -rf /opt/etc/init.d/S99hostsgen-ui /opt/share/hostsgen-ui`.
 - Созданные VPN-подключения и маршруты — обычные настройки роутера, они остаются и удаляются как обычно.
   На сервере всё лежит в контейнере `keenetic-awg` и папке `/opt/keenetic-vpn`; убрать с сервера:
   `docker rm -f keenetic-awg && rm -rf /opt/keenetic-vpn`.
