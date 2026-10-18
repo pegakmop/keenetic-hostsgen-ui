@@ -43,7 +43,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define VERSION "1.3.0"
+#define VERSION "1.3.1"
 #define HOME "/opt/share/hostsgen-ui"
 #define ADDON HOME "/addon.js"
 #define SELF HOME "/hostsgen-ui"

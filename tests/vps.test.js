@@ -83,6 +83,8 @@ test('readStatus: шаги, журнал, ошибка и настройки п�
   assert.equal(job.conf, conf);
   assert.equal(job.done, true);
   assert.equal(vps.endpointHost(job.conf), '203.0.113.10');
+  assert.equal(vps.endpointPort(job.conf), '41234');
+  assert.equal(vps.endpointPort(''), '');
 
   const failed = vps.readStatus(['@@state failed 2 2', '@@step connect Подключаюсь', '@@error сервер не принял логин или пароль'], vps.newJob());
   assert.equal(failed.error, 'сервер не принял логин или пароль');

@@ -448,7 +448,8 @@ add_peer() {
 }
 
 start_container() {
-	step start "Запускаю сервер AmneziaWG"
+	# порт — в шаге, а не только в журнале: его открывают в брандмауэре хостинга, если он там есть
+	step start "Запускаю сервер AmneziaWG (UDP-порт $port)"
 	if docker inspect "$CONTAINER" >/dev/null 2>&1; then
 		docker restart "$CONTAINER" >/dev/null || restore_and_fail "не удалось перезапустить контейнер $CONTAINER"
 	else
@@ -497,7 +498,7 @@ main() {
 	write_start_script
 	add_peer
 	start_container
-	step done "Сервер готов"
+	step done "Сервер готов, подключений на нём: $(grep -c '^\[Peer\]' "$CONF")"
 	echo "@@conf-begin"
 	printf '%s\n' "$CLIENT_CONF" | base64
 	echo "@@conf-end"

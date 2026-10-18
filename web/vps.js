@@ -142,8 +142,10 @@
       'Версия 2.0 есть в KeeneticOS 5.1, 3.1 — в 5.2.';
   }
 
-  /** Адрес сервера из строки Endpoint готовой конфигурации. */
-  const endpointHost = (conf) => ((conf || '').match(/^Endpoint\s*=\s*(.+):\d+\s*$/m) || [])[1] || '';
+  /** Адрес и порт сервера из строки Endpoint готовой конфигурации. */
+  const endpointOf = (conf) => (conf || '').match(/^Endpoint\s*=\s*(.+):(\d+)\s*$/m) || [];
+  const endpointHost = (conf) => endpointOf(conf)[1] || '';
+  const endpointPort = (conf) => endpointOf(conf)[2] || '';
 
   // ---------- настройки «Для опытных» ----------
 
@@ -305,7 +307,7 @@
 
   if (typeof window === 'undefined') {
     // node --test: чистые функции без DOM
-    module.exports = { awgProfile, awgName, profileNote, pickSubnet, maskPassword, newJob, readStatus, endpointHost, expertOptions, HOST_RE };
+    module.exports = { awgProfile, awgName, profileNote, pickSubnet, maskPassword, newJob, readStatus, endpointHost, endpointPort, expertOptions, HOST_RE };
     return;
   }
 
@@ -565,7 +567,13 @@
       const overlap = intersects ? ` Сеть VPN пересекается с подключениями: ${intersects}.` : '';
       const warned = state.warned ? ' Обратите внимание на предупреждение в списке шагов.' : '';
       if (online) setStatus(`Готово: подключение «${name}» (${created}) работает.${warned} ${tips}${overlap}`, 'ok');
-      else setStatus(`Подключение «${name}» (${created}) создано, но сервер пока не ответил — проверьте его статус через минуту.${overlap} ${tips}`, 'error');
+      else {
+        // Чаще всего так бывает, когда облачный брандмауэр хостинга не пускает UDP к серверу
+        const port = endpointPort(conf);
+        setStatus(`Подключение «${name}» (${created}) создано, но сервер пока не ответил. Подождите минуту и обновите страницу; ` +
+          `если связи так и не будет, откройте входящий ${port ? `UDP-порт ${port}` : 'UDP-порт сервера'} в брандмауэре (группах безопасности) ` +
+          `в панели хостинга.${overlap} ${tips}`, 'error');
+      }
     };
 
     const start = async () => {
