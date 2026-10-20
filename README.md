@@ -112,12 +112,8 @@ Entware — там написано, какой архив брать: mipsel, m
 ### Если на роутере уже есть Entware — одной командой
 
 Тогда модуль можно поставить и обновлять по SSH, без папки `install` и переподключения накопителя.
-
-1. Для скачивания с GitHub нужен `curl`: встроенный в Entware `wget` не умеет HTTPS. Если его ещё нет:
-   ```sh
-   opkg update && opkg install curl
-   ```
-2. Войдите в Entware по SSH (обычно `ssh root@192.168.1.1 -p 222`) и вставьте целиком:
+Войдите в Entware по SSH (обычно `ssh root@192.168.1.1 -p 222`) и вставьте целиком — копируйте отсюда, а не
+из мессенджера: там склеиваются строки, и скрипт перестаёт работать:
 
 ```sh
 (
@@ -130,10 +126,14 @@ Entware — там написано, какой архив брать: mipsel, m
     "$(printf '\177ELF\001\002')"*) arch=mips ;;
     *) echo "Не узнал процессор роутера"; exit 1 ;;
   esac
-  if command -v curl >/dev/null; then get="curl -fsSL -o"; else get="wget -qO"; fi
+  # GitHub отдаёт архивы только по HTTPS, а wget из Entware его не умеет — нужен curl
+  if ! command -v curl >/dev/null; then
+    echo "Ставлю curl: без него архив с GitHub не скачать"
+    opkg update && opkg install curl || { echo "Не удалось поставить curl — проверьте доступ к bin.entware.net"; exit 1; }
+  fi
   tmp=$(mktemp -d /opt/tmp/hostsgen-ui.XXXXXX) || exit 1
   echo "Скачиваю hostsgen-ui-$arch.tar.gz"
-  if $get "$tmp/hg.tar.gz" "$url/hostsgen-ui-$arch.tar.gz"; then
+  if curl -fsSL -o "$tmp/hg.tar.gz" "$url/hostsgen-ui-$arch.tar.gz"; then
     tar -xzf "$tmp/hg.tar.gz" -C "$tmp" &&
       mkdir -p /opt/share/hostsgen-ui &&
       cp -r "$tmp/share/hostsgen-ui/." /opt/share/hostsgen-ui/ &&
@@ -141,13 +141,14 @@ Entware — там написано, какой архив брать: mipsel, m
       /opt/etc/init.d/S99hostsgen-ui restart &&
       echo "Готово. Обновите страницу веб-интерфейса (F5, на Mac — Cmd+R) — без этого кнопки не появятся"
   else
-    echo "Не скачался архив. Для HTTPS нужен curl: opkg update && opkg install curl"
+    echo "Не скачался архив — проверьте, открывается ли github.com с роутера"
   fi
   rm -rf "$tmp"
 )
 ```
 
-Скрипт сам определит процессор роутера, скачает архив последней версии и перезапустит модуль — в конце
+Скрипт сам определит процессор роутера, при необходимости поставит `curl` (через `opkg`, нужен доступ
+к bin.entware.net), скачает архив последней версии и перезапустит модуль — в конце
 появятся строки «index.html: модуль встроен» и напоминание обновить страницу веб-интерфейса. Модуль
 запускается вместе с Entware, в том числе после перезагрузки. Обновиться — выполнить ту же команду ещё раз.
 
